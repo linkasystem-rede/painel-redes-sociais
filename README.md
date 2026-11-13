@@ -1,2 +1,2 @@
-# painel-redes-sociais
-Interface do painel de redes sociais para uso interno. Dados e operações protegidas permanecem no Google Apps Script.
+# Painel de Redes Sociais
+Interface pública. Dados ficam na planilha privada. Conecte com a conta Google autorizada e mantenha a janela de conexão aberta. Nenhuma chave ou senha integra este repositório.
