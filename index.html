@@ -146,6 +146,47 @@ function createGithubRPC(endpoint){
 }
 
 return {createGithubRPC};})();
+const passwordFactory=(()=>{
+function createPasswordRPC(endpoint){
+ const storageKey='social-admin-session-v1';let session=null;
+ try{session=JSON.parse(localStorage.getItem(storageKey));if(session?.expires<=Date.now())session=null}catch{}
+ const clear=()=>{session=null;localStorage.removeItem(storageKey)};
+ async function request(body){
+  if(!endpoint)throw Error('Login em configuração.');
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),45000);
+  try{const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},credentials:'omit',redirect:'follow',body:JSON.stringify(body),signal:controller.signal});
+   if(!response.ok)throw Error('Não foi possível conectar ao servidor.');let reply;try{reply=await response.json()}catch{throw Error('Servidor indisponível. Confira a publicação do Apps Script.')}
+   if(!reply.ok)throw Error(reply.error||'Solicitação recusada.');return reply.result;
+  }finally{clearTimeout(timeout)}
+ }
+ async function login(){
+  const dialog=document.createElement('dialog');dialog.innerHTML='<form><p class="eyebrow">PAINEL DE REDES SOCIAIS</p><h2>Entrar no sistema</h2><label>Usuário<input name="username" value="admin" required autocomplete="username"></label><label>Senha<input name="password" type="password" required maxlength="128" autocomplete="current-password"></label><p><label class="remove-logo"><input name="remember" type="checkbox" checked>Manter conectado neste aparelho</label></p><button class="primary">Entrar</button><p role="alert" class="error"></p><p class="muted">Use sua conta admin. Não é necessário abrir uma janela Google.</p></form>';
+  dialog.addEventListener('cancel',e=>e.preventDefault());document.body.append(dialog);dialog.showModal();
+  let readyChallenge;
+  if(endpoint)request({action:'challenge'}).then(c=>{readyChallenge=c}).catch(error=>{dialog.querySelector('[role=alert]').textContent=error.message==='LOGIN_NOT_CONFIGURED'?'A senha do admin ainda precisa ser configurada.':error.message});
+  return new Promise(resolve=>{dialog.querySelector('form').onsubmit=async e=>{e.preventDefault();const form=e.target,button=form.querySelector('button'),error=form.querySelector('[role=alert]');button.disabled=true;error.textContent='';try{
+   const username=form.elements.username.value.trim();if(username!=='admin')throw Error('Usuário ou senha incorretos.');
+   const challenge=readyChallenge||await request({action:'challenge'});if(challenge.iterations!==600000||typeof challenge.salt!=='string')throw Error('Configuração de login inválida.');
+   const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(form.elements.password.value),'PBKDF2',false,['deriveBits']);
+   const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',iterations:challenge.iterations,salt:new TextEncoder().encode(challenge.salt)},key,256);
+   const proof=Array.from(new Uint8Array(bits),v=>v.toString(16).padStart(2,'0')).join('');form.elements.password.value='';
+   session=await request({action:'login',username,proof});if(form.elements.remember.checked)localStorage.setItem(storageKey,JSON.stringify(session));else localStorage.removeItem(storageKey);
+   dialog.close();dialog.remove();resolve();
+  }catch(err){error.textContent=err.message==='LOGIN_NOT_CONFIGURED'?'A senha do admin ainda precisa ser configurada.':err.message}finally{button.disabled=false}}});
+ }
+ function installLogout(){if(document.querySelector('#passwordLogout'))return;const button=document.createElement('button');button.id='passwordLogout';button.textContent='Sair';button.className='noPrint';document.querySelector('.toolbar').append(button);button.onclick=async()=>{if(!confirm('Confirme que as alterações foram salvas na planilha antes de sair. Deseja encerrar esta sessão?'))return;button.disabled=true;try{await request({action:'logout',token:session?.token});clear();location.reload()}catch(error){button.disabled=false;document.querySelector('#status').textContent='Não foi possível encerrar a sessão no servidor. '+error.message}}}
+ return async(method,...args)=>{
+  if(!['loadState','saveState'].includes(method))throw Error('Operação não permitida.');
+  if(method==='loadState'){
+   if(session){try{const result=await request({action:'load',token:session.token});installLogout();return result}catch(error){if(error.message!=='SESSION_EXPIRED')throw error;clear()}}
+   await login();const result=await request({action:'load',token:session.token});installLogout();return result;
+  }
+  if(!session)throw Error('Sessão encerrada. Exporte uma cópia e entre novamente.');
+  return request({action:'save',token:session.token,state:args[0],revision:args[1],requestId:args[2]});
+ };
+}
+
+return {createPasswordRPC};})();
 const importHistory=(()=>{
 const {merge}=parsers;
 const rowKey=r=>[r.network,r.metric,r.date].join('|');
@@ -183,7 +224,7 @@ function installCompanyTools({current,getState,save,render,companies,message,esc
 return {installCompanyTools};})();
 const {showReport}=reportFactory;const {applyImportBatch,showImportHistory}=importHistory;const {installCompanyTools}=companyFactory;const {installAnalysis}=analysisUIFactory;const {showMind}=mind;const {instagram,xlsxRows,tiktok,merge,labels}=parsers;
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),num=n=>new Intl.NumberFormat('pt-BR').format(n),key='orbita-local-v1';let state={companies:[],selected:null},tab='dashboard',pending=null;
-const cloudStore=cloudFactory.createCloudStore(githubFactory.createGithubRPC("https://script.google.com/macros/s/AKfycbyEKsQ24oHoOwVZ9ucyycq8bc_N6M7WcvaGQu4z7Cm9HigmRldYa1lcXiDMHYbuO20V/exec"));try{state=await cloudStore.load()}catch{document.querySelector('#content').innerHTML='<div class="empty"><h2>Conexão pendente</h2><p>Confira a conta Google, as permissões e a configuração da planilha. Os dados locais não foram enviados.</p></div>';document.querySelectorAll('button,input,select').forEach(el=>{if(el.id!=='cloudReload')el.disabled=true});return}
+const cloudStore=cloudFactory.createCloudStore(passwordFactory.createPasswordRPC("https://script.google.com/macros/s/AKfycbxGJVvWWiEYrpl4WCN3HYNJCve3fDP0Yg3CJE7EknMlUbO_dry-9zs2XaGjbOjDB_tJ/exec"));try{state=await cloudStore.load()}catch{document.querySelector('#content').innerHTML='<div class="empty"><h2>Conexão pendente</h2><p>Confira a conta Google, as permissões e a configuração da planilha. Os dados locais não foram enviados.</p></div>';document.querySelectorAll('button,input,select').forEach(el=>{if(el.id!=='cloudReload')el.disabled=true});return}
 
 const current=()=>state.companies.find(c=>c.id===state.selected);
 function save(){return cloudStore.schedule(state)}
